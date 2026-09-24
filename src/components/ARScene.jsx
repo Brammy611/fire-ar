@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { ARButton } from "three/addons/webxr/ARButton.js";
+import { createFireMarker } from "./FireMarker";
 
 export default function ARScene() {
   const containerRef = useRef(null);
@@ -25,6 +26,7 @@ export default function ARScene() {
       alpha: true,
     });
 
+    renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
 
     // WEBXR
@@ -32,56 +34,208 @@ export default function ARScene() {
     const arButton = ARButton.createButton(renderer, {
         requiredFeatures: ["hit-test"],
     });
+
     document.body.appendChild(arButton);
-
     container.appendChild(renderer.domElement);
 
-    // AE SESSION EVENT
-    renderer.xr.addEventListener("sessionstart", () => {
-      console.log("AR SESSION STARTED");
-    });
-
-    renderer.xr.addEventListener("sessionend", () => {
-      console.log("AR SESSION ENDED");
-    });
-
-    container.appendChild(renderer.domElement);
-    
-    // OBJECT
-    const geometry = new THREE.BoxGeometry(0.2, 0.2, 0.2);
-
-    const material = new THREE.MeshBasicMaterial({
-      color: 0xff0000,
-    });
-
-    const cube = new THREE.Mesh(
-      geometry,
-      material
+    // RETICLE
+    const reticle = new THREE.Mesh(
+      new THREE.RingGeometry(0.05, 0.07, 32),
+      new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        side: THREE.DoubleSide,
+      })
     );
 
-    cube.position.set(0, 0, -1);
+    reticle.rotation.x = -Math.PI / 2;
+    reticle.matrixAutoUpdate = false;
+    reticle.visible = false;
 
-    scene.add(cube);
+    scene.add(reticle);
 
-    // ANIMATION
-    renderer.setAnimationLoop(() => {
-      cube.rotation.y += 0.01;
+    // HIT TEST VARIABLES
+    let hitTestSource = null;
+    let hitTestSourceRequested = false;
 
-      renderer.render(scene, camera);
-    });
+    // FIRE MARKER
+    let fireMarker = null;
+
+    // AR SESSION START
+    renderer.xr.addEventListener(
+      "sessionstart",
+      async () => {
+        console.log("AR SESSION STARTED");
+
+        const session = renderer.xr.getSession();
+
+        if (!session) {
+          console.error("XR session tidak ditemukan");
+          return;
+        }
+
+        try {
+          const viewerSpace =
+            await session.requestReferenceSpace("viewer");
+
+          hitTestSource =
+            await session.requestHitTestSource({
+              space: viewerSpace,
+            });
+
+          hitTestSourceRequested = true;
+
+          console.log("Hit test source ready");
+        } catch (error) {
+          console.error(
+            "❌ Failed to create hit test source:",
+            error
+          );
+        }
+      }
+    );
+
+    // AR SESSION END
+    renderer.xr.addEventListener(
+      "sessionend",
+      () => {
+        console.log("🛑 AR SESSION ENDED");
+
+        hitTestSource = null;
+        hitTestSourceRequested = false;
+
+        reticle.visible = false;
+      }
+    );
+
+    // TAP / SELECT
+    const controller = renderer.xr.getController(0);
+
+    controller.addEventListener(
+      "select",
+      () => {
+        if (!reticle.visible) {
+          console.log(
+            "Tidak ada surface yang terdeteksi"
+          );
+
+          return;
+        }
+
+        console.log("🔥 Surface selected");
+
+        // Hapus marker lama
+        if (fireMarker) {
+          scene.remove(fireMarker);
+        }
+
+        // Buat marker baru
+        fireMarker = createFireMarker({
+          priority: "HIGH",
+          distance: "1.2 KM",
+          direction: "↗ NE",
+        });
+
+        // Letakkan marker pada posisi reticle
+        fireMarker.position.setFromMatrixPosition(
+          reticle.matrix
+        );
+
+        scene.add(fireMarker);
+      }
+    );
+
+    scene.add(controller);
+
+    // TEST LIGHT
+    const ambientLight = new THREE.HemisphereLight(
+      0xffffff,
+      0xbbbbff,
+      1
+    );
+
+    scene.add(ambientLight);
+
+    // RENDER LOOP
+    renderer.setAnimationLoop(
+      (time, frame) => {
+        if (frame && hitTestSource) {
+          const referenceSpace =
+            renderer.xr.getReferenceSpace();
+
+          const hitTestResults =
+            frame.getHitTestResults(
+              hitTestSource
+            );
+
+          if (hitTestResults.length > 0) {
+            const hit = hitTestResults[0];
+
+            const pose = hit.getPose(
+              referenceSpace
+            );
+
+            if (pose) {
+              reticle.visible = true;
+
+              reticle.matrix.fromArray(
+                pose.transform.matrix
+              );
+            }
+          } else {
+            reticle.visible = false;
+          }
+        }
+
+        renderer.render(
+          scene,
+          camera
+        );
+      }
+    );
+
+    // RESIZE
+    const handleResize = () => {
+      camera.aspect =
+        window.innerWidth /
+        window.innerHeight;
+
+      camera.updateProjectionMatrix();
+
+      renderer.setSize(
+        window.innerWidth,
+        window.innerHeight
+      );
+    };
+
+    window.addEventListener(
+      "resize",
+      handleResize
+    );
 
     return () => {
+      window.removeEventListener(
+        "resize",
+        handleResize
+      );
+
       renderer.setAnimationLoop(null);
 
-      if (arButton) {
-        arButton.remove();
+      if (hitTestSource) {
+        hitTestSource.cancel();
       }
 
-      if (renderer.domElement) {
-        container.removeChild(renderer.domElement);
-      }
+      arButton.remove();
 
       renderer.dispose();
+
+      if (
+        renderer.domElement &&
+        container.contains(renderer.domElement)
+      ) {
+        container.removeChild(
+          renderer.domElement
+        );
+      }
     };
   }, []);
 
@@ -89,8 +243,11 @@ export default function ARScene() {
     <div
       ref={containerRef}
       style={{
-        width: "100vw",
-        height: "100vh",
+        position: "fixed",
+        inset: 0,
+        width: "100%",
+        height: "100%",
+        overflow: "hidden",
       }}
     />
   );

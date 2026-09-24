@@ -29,11 +29,24 @@ export default function ARScene() {
 
     // WEBXR
     renderer.xr.enabled = true;
-    const arButton = ARButton.createButton(renderer);
+    const arButton = ARButton.createButton(renderer, {
+        requiredFeatures: ["hit-test"],
+    });
     document.body.appendChild(arButton);
 
     container.appendChild(renderer.domElement);
 
+    // AE SESSION EVENT
+    renderer.xr.addEventListener("sessionstart", () => {
+      console.log("AR SESSION STARTED");
+    });
+
+    renderer.xr.addEventListener("sessionend", () => {
+      console.log("AR SESSION ENDED");
+    });
+
+    container.appendChild(renderer.domElement);
+    
     // OBJECT
     const geometry = new THREE.BoxGeometry(0.2, 0.2, 0.2);
 
